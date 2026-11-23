@@ -1,0 +1,35 @@
+diff --git a/src/protocols/ImageCopyCapture.cpp b/src/protocols/ImageCopyCapture.cpp
+index 20d990b..f4c3a96 100644
+--- a/src/protocols/ImageCopyCapture.cpp
++++ b/src/protocols/ImageCopyCapture.cpp
+@@ -309,9 +309,16 @@ void CImageCopyCaptureCursorSession::sendCursorEvents() {
+     if (PERM != PERMISSION_RULE_ALLOW_MODE_ALLOW)
+         return;
+ 
+-    const auto PMONITOR  = m_source->m_monitor.expired() ? m_source->m_window->m_monitor.lock() : m_source->m_monitor.lock();
+-    CBox       sourceBox = m_source->logicalBox();
+-    bool       overlaps  = Pointer::mgr()->getCursorBoxGlobal().overlaps(sourceBox);
++    const auto PMONITOR = m_source->m_monitor.expired() ? m_source->m_window->m_monitor.lock() : m_source->m_monitor.lock();
++    if (!PMONITOR)
++        return;
++
++    // The area that ends up in the buffer: the whole monitor, or the window's own surface (the buffer is
++    // window size * monitor scale, without border/shadow/groupbar), in logical coordinates.
++    CBox captureBox = m_source->m_monitor.expired() ?
++        CBox{m_source->m_window->position(Desktop::View::IGeometric::GEOMETRIC_CURRENT), m_source->m_window->size(Desktop::View::IGeometric::GEOMETRIC_CURRENT)} :
++        m_source->m_monitor->logicalBox();
++    bool overlaps = Pointer::mgr()->getCursorBoxGlobal().overlaps(captureBox);
+ 
+     if (m_entered && !overlaps) {
+         m_entered = false;
+@@ -325,7 +332,9 @@ void CImageCopyCaptureCursorSession::sendCursorEvents() {
+     if (!overlaps)
+         return;
+ 
+-    Vector2D pos = Pointer::mgr()->position() - sourceBox.pos();
++    // ext-image-copy-capture: "relative to the main buffer's top left corner in transformed buffer pixel
++    // coordinates", so logical -> buffer px
++    Vector2D pos = ((Pointer::mgr()->position() - captureBox.pos()) * PMONITOR->m_scale).round();
+     if (pos != m_pos) {
+         m_pos = pos;
+         m_resource->sendPosition(m_pos.x, m_pos.y);

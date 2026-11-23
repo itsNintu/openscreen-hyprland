@@ -1,7 +1,40 @@
-diff --git c/protocols/meson.build w/protocols/meson.build
+From 2090cadb46a116f9909113712c693a1febed12e6 Mon Sep 17 00:00:00 2001
+From: itsNintu <itsNintu@users.noreply.github.com>
+Date: Mon, 23 Nov 2026 09:23:17 +0700
+Subject: [PATCH] screencopy: support cursor_mode METADATA
+
+Advertise and accept the ScreenCast "metadata" cursor mode: frames are
+captured without the cursor and its position is attached to every
+PipeWire buffer as SPA_META_Cursor, so recorders can draw their own
+cursor, smooth it, or zoom to clicks (e.g. Openscreen's editable cursor).
+
+The pointer is followed with ext-image-copy-capture cursor sessions, one
+per output, and mapped onto the shared area (output, region or window).
+Buffers keep flowing while only the cursor moves.
+
+Hyprland (as of 0.56) reports cursor session positions in logical px
+relative to the source's logical box, rather than buffer px relative to
+the captured buffer as the protocol specifies; for windows that box
+includes decorations. Output sessions in global logical coordinates are
+therefore used for every share type, and window shares look the window's
+position and size up through Hyprland's IPC. Once Hyprland follows the
+spec, window shares can use a toplevel cursor session directly.
+
+No cursor bitmap is sent yet (bitmap_offset = 0).
+
+Refs: #444
+---
+ protocols/meson.build      |   2 +
+ src/core/PortalManager.cpp |  21 ++++
+ src/core/PortalManager.hpp |   7 ++
+ src/portals/Screencopy.cpp | 229 +++++++++++++++++++++++++++++++++++--
+ src/portals/Screencopy.hpp |  32 ++++++
+ 5 files changed, 283 insertions(+), 8 deletions(-)
+
+diff --git a/protocols/meson.build b/protocols/meson.build
 index 233edd9..83312f0 100644
---- c/protocols/meson.build
-+++ w/protocols/meson.build
+--- a/protocols/meson.build
++++ b/protocols/meson.build
 @@ -27,6 +27,8 @@ client_protocols = [
  	wl_protocol_dir / 'stable/linux-dmabuf/linux-dmabuf-v1.xml',
  	wl_protocol_dir / 'unstable/xdg-output/xdg-output-unstable-v1.xml',
@@ -11,11 +44,11 @@ index 233edd9..83312f0 100644
  ]
  
  wl_proto_files = []
-diff --git c/src/core/PortalManager.cpp w/src/core/PortalManager.cpp
-index 5dc98d4..fa07850 100644
---- c/src/core/PortalManager.cpp
-+++ w/src/core/PortalManager.cpp
-@@ -246,6 +246,34 @@ void CPortalManager::onGlobal(uint32_t name, const char* interface, uint32_t ver
+diff --git a/src/core/PortalManager.cpp b/src/core/PortalManager.cpp
+index 5dc98d4..46ad96b 100644
+--- a/src/core/PortalManager.cpp
++++ b/src/core/PortalManager.cpp
+@@ -246,6 +246,27 @@ void CPortalManager::onGlobal(uint32_t name, const char* interface, uint32_t ver
      else if (INTERFACE == wl_shm_interface.name)
          m_sWaylandConnection.shm = makeShared<CCWlShm>((wl_proxy*)wl_registry_bind((wl_registry*)m_sWaylandConnection.registry->resource(), name, &wl_shm_interface, version));
  
@@ -36,13 +69,6 @@ index 5dc98d4..fa07850 100644
 +        m_sWaylandConnection.imageCopyMgr = makeShared<CCExtImageCopyCaptureManagerV1>(
 +            (wl_proxy*)wl_registry_bind((wl_registry*)m_sWaylandConnection.registry->resource(), name, &ext_image_copy_capture_manager_v1_interface, 1u));
 +
-+    else if (INTERFACE == ext_foreign_toplevel_image_capture_source_manager_v1_interface.name)
-+        m_sWaylandConnection.toplevelSourceMgr = makeShared<CCExtForeignToplevelImageCaptureSourceManagerV1>((wl_proxy*)wl_registry_bind(
-+            (wl_registry*)m_sWaylandConnection.registry->resource(), name, &ext_foreign_toplevel_image_capture_source_manager_v1_interface, 1u));
-+
-+    else if (INTERFACE == ext_foreign_toplevel_list_v1_interface.name)
-+        m_sWaylandConnection.extToplevelListName = name;
-+
 +    else if (INTERFACE == ext_output_image_capture_source_manager_v1_interface.name)
 +        m_sWaylandConnection.outputSourceMgr = makeShared<CCExtOutputImageCaptureSourceManagerV1>(
 +            (wl_proxy*)wl_registry_bind((wl_registry*)m_sWaylandConnection.registry->resource(), name, &ext_output_image_capture_source_manager_v1_interface, 1u));
@@ -50,21 +76,20 @@ index 5dc98d4..fa07850 100644
      else if (INTERFACE == zwlr_foreign_toplevel_manager_v1_interface.name) {
          m_sHelpers.toplevel = std::make_unique<CToplevelManager>(name, version);
  
-diff --git c/src/core/PortalManager.hpp w/src/core/PortalManager.hpp
-index eb62c1b..e0dda2e 100644
---- c/src/core/PortalManager.hpp
-+++ w/src/core/PortalManager.hpp
-@@ -21,6 +21,9 @@
+diff --git a/src/core/PortalManager.hpp b/src/core/PortalManager.hpp
+index eb62c1b..8f20d6e 100644
+--- a/src/core/PortalManager.hpp
++++ b/src/core/PortalManager.hpp
+@@ -21,6 +21,8 @@
  #include "linux-dmabuf-v1.hpp"
  #include "wlr-foreign-toplevel-management-unstable-v1.hpp"
  #include "wlr-screencopy-unstable-v1.hpp"
 +#include "ext-image-copy-capture-v1.hpp"
 +#include "ext-image-capture-source-v1.hpp"
-+#include "ext-foreign-toplevel-list-v1.hpp"
  
  #include "../includes.hpp"
  #include "../dbusDefines.hpp"
-@@ -95,6 +98,13 @@ class CPortalManager {
+@@ -95,6 +97,11 @@ class CPortalManager {
          SP<CCZwpLinuxDmabufFeedbackV1>        linuxDmabufFeedback;
          SP<CCZxdgOutputManagerV1>             xdgOutputManager;
          SP<CCWlShm>                           shm;
@@ -73,23 +98,21 @@ index eb62c1b..e0dda2e 100644
 +        SP<CCWlPointer>                               pointer;
 +        SP<CCExtImageCopyCaptureManagerV1>            imageCopyMgr;
 +        SP<CCExtOutputImageCaptureSourceManagerV1>    outputSourceMgr;
-+        SP<CCExtForeignToplevelImageCaptureSourceManagerV1> toplevelSourceMgr;
-+        uint32_t                                      extToplevelListName = 0; // bound on demand
          gbm_bo*                               gbm       = nullptr;
          gbm_device*                           gbmDevice = nullptr;
          struct {
-diff --git c/src/portals/Screencopy.cpp w/src/portals/Screencopy.cpp
-index 34af332..e5fe616 100644
---- c/src/portals/Screencopy.cpp
-+++ w/src/portals/Screencopy.cpp
+diff --git a/src/portals/Screencopy.cpp b/src/portals/Screencopy.cpp
+index 34af332..fd48a09 100644
+--- a/src/portals/Screencopy.cpp
++++ b/src/portals/Screencopy.cpp
 @@ -9,10 +9,17 @@
  #include <pipewire/pipewire.h>
  #include "linux-dmabuf-v1.hpp"
  #include <unistd.h>
 +#include <sys/socket.h>
 +#include <sys/un.h>
-+#include <cstring>
 +#include <cstdio>
++#include <format>
  
  constexpr static int MAX_RETRIES        = 10;
  constexpr static int MAX_DMABUF_RETRIES = 2;
@@ -143,22 +166,46 @@ index 34af332..e5fe616 100644
      startFrameCopy(pSession);
  
      wl_display_dispatch(g_pPortalManager->m_sWaylandConnection.display);
-@@ -339,6 +355,236 @@ void CScreencopyPortal::startSharing(CScreencopyPortal::SSession* pSession) {
+@@ -339,6 +355,153 @@ void CScreencopyPortal::startSharing(CScreencopyPortal::SSession* pSession) {
      Debug::log(TRACE, "[sc] queued frame in {}ms", 1000.0 / pSession->sharingData.framerate);
  }
  
-+// buffer px per logical px of an output
-+static void outputPixelScale(const SOutput* o, double& sx, double& sy) {
-+    const bool   ROTATED = o->transform % 2 == 1;
-+    const double PXW     = ROTATED ? o->height : o->width;
-+    const double PXH     = ROTATED ? o->width : o->height;
-+    sx                   = o->logicalSizeValid && o->logicalWidth > 0 ? PXW / o->logicalWidth : o->scale;
-+    sy                   = o->logicalSizeValid && o->logicalHeight > 0 ? PXH / o->logicalHeight : o->scale;
++// Hyprland's ext-image-copy-capture cursor sessions report positions in logical px relative to the source's
++// logical box (the protocol asks for buffer px relative to the captured buffer). Output sources therefore give
++// global logical coordinates once the output's logical position is added, which is what everything here uses.
++static bool outputLogicalBox(const SOutput* o, double& x, double& y, double& w, double& h) {
++    x = o->logicalX;
++    y = o->logicalY;
++    if (o->logicalSizeValid && o->logicalWidth > 0 && o->logicalHeight > 0) {
++        w = o->logicalWidth;
++        h = o->logicalHeight;
++    } else {
++        const bool ROTATED = o->transform % 2 == 1;
++        w                  = (ROTATED ? o->height : o->width) / o->scale;
++        h                  = (ROTATED ? o->width : o->height) / o->scale;
++    }
++    return w > 0 && h > 0;
 +}
 +
-+// Window geometry (global logical "at" and "size") from Hyprland's IPC, at most every 100ms while the
-+// pointer moves, so moving/resizing the window during a recording is followed.
-+void CScreencopyPortal::SSession::SCursorMeta::refreshWindowGeometry(bool force) {
++bool CScreencopyPortal::SSession::SCursorMeta::pointerInArea(double& x, double& y) const {
++    if (!areaValid)
++        return false;
++    for (const auto& oc : outputs) {
++        double ox, oy, ow, oh;
++        // a session "enters" as soon as the cursor image touches the output; the hotspot decides which one it's on
++        if (!oc->inside || !outputLogicalBox(oc->output, ox, oy, ow, oh) || oc->x < 0 || oc->y < 0 || oc->x >= ow || oc->y >= oh)
++            continue;
++        x = ox + oc->x - areaX;
++        y = oy + oc->y - areaY;
++        return x >= 0 && y >= 0 && x < areaW && y < areaH;
++    }
++    return false;
++}
++
++// No Wayland protocol tells a client where a window is, so window shares ask Hyprland's IPC for the window's
++// position and size, at most every 100ms while the pointer moves. That follows a window moved or resized
++// mid-recording.
++void CScreencopyPortal::SSession::SCursorMeta::refreshWindowArea(bool force) {
 +    const auto NOW = std::chrono::steady_clock::now();
 +    if (!windowAddress || (!force && NOW - windowQueried < std::chrono::milliseconds(100)))
 +        return;
@@ -168,41 +215,40 @@ index 34af332..e5fe616 100644
 +    const char* HIS = getenv("HYPRLAND_INSTANCE_SIGNATURE");
 +    if (!XDG || !HIS)
 +        return;
-+    const std::string PATH = std::string{XDG} + "/hypr/" + HIS + "/.socket.sock";
 +
-+    int               fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
-+    if (fd < 0)
-+        return;
 +    sockaddr_un addr = {.sun_family = AF_UNIX};
-+    strncpy(addr.sun_path, PATH.c_str(), sizeof(addr.sun_path) - 1);
-+    timeval tv = {.tv_sec = 0, .tv_usec = 200000};
-+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
++    snprintf(addr.sun_path, sizeof(addr.sun_path), "%s/hypr/%s/.socket.sock", XDG, HIS);
++    const int FD = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
++    if (FD < 0)
++        return;
++    const timeval TIMEOUT = {.tv_sec = 0, .tv_usec = 200000};
++    setsockopt(FD, SOL_SOCKET, SO_RCVTIMEO, &TIMEOUT, sizeof(TIMEOUT));
++    setsockopt(FD, SOL_SOCKET, SO_SNDTIMEO, &TIMEOUT, sizeof(TIMEOUT));
 +    std::string reply;
-+    if (connect(fd, (sockaddr*)&addr, sizeof(addr)) == 0 && write(fd, "clients", 7) == 7) {
++    if (connect(FD, (sockaddr*)&addr, sizeof(addr)) == 0 && write(FD, "clients", 7) == 7) {
 +        char    buf[8192];
 +        ssize_t n;
-+        while ((n = read(fd, buf, sizeof(buf))) > 0)
++        while ((n = read(FD, buf, sizeof(buf))) > 0)
 +            reply.append(buf, n);
 +    }
-+    close(fd);
++    close(FD);
 +
-+    char head[64];
-+    snprintf(head, sizeof(head), "Window %lx -> ", (unsigned long)windowAddress);
-+    auto start = reply.find(head);
-+    if (start == std::string::npos)
++    // "Window <hex address> -> <title>:" followed by tab-indented "key: value" lines
++    const auto START = reply.find(std::format("Window {:x} -> ", windowAddress));
++    if (START == std::string::npos)
 +        return;
-+    auto       end   = reply.find("\nWindow ", start + 1);
-+    const auto BLOCK = reply.substr(start, end == std::string::npos ? std::string::npos : end - start);
-+    double     ax = 0, ay = 0, sw = 0, sh = 0;
-+    const auto AT = BLOCK.find("\tat: "), SIZE = BLOCK.find("\tsize: ");
-+    if (AT == std::string::npos || SIZE == std::string::npos || sscanf(BLOCK.c_str() + AT, "\tat: %lf,%lf", &ax, &ay) != 2 ||
-+        sscanf(BLOCK.c_str() + SIZE, "\tsize: %lf,%lf", &sw, &sh) != 2 || sw <= 0 || sh <= 0)
++    const auto END   = reply.find("\nWindow ", START + 1);
++    const auto BLOCK = reply.substr(START, END == std::string::npos ? std::string::npos : END - START);
++    const auto AT = BLOCK.find("\n\tat: "), SIZE = BLOCK.find("\n\tsize: ");
++    double     x, y, w, h;
++    if (AT == std::string::npos || SIZE == std::string::npos || sscanf(BLOCK.c_str() + AT, "\n\tat: %lf,%lf", &x, &y) != 2 ||
++        sscanf(BLOCK.c_str() + SIZE, "\n\tsize: %lf,%lf", &w, &h) != 2 || w <= 0 || h <= 0)
 +        return;
-+    if (!windowValid || ax != winX || ay != winY || sw != winW || sh != winH)
-+        Debug::log(LOG, "[screencopy] cursor metadata: window at {},{} size {}x{}", ax, ay, sw, sh);
-+    winX = ax, winY = ay, winW = sw, winH = sh;
-+    windowValid = true;
++
++    if (!areaValid || x != areaX || y != areaY || w != areaW || h != areaH)
++        Debug::log(LOG, "[screencopy] cursor metadata: window at {},{} size {}x{}", x, y, w, h);
++    areaX = x, areaY = y, areaW = w, areaH = h;
++    areaValid = true;
 +}
 +
 +bool CScreencopyPortal::SSession::setupCursorMetadata() {
@@ -213,174 +259,68 @@ index 34af332..e5fe616 100644
 +        return false;
 +    }
 +
-+    if (selection.type != TYPE_OUTPUT && selection.type != TYPE_GEOMETRY && selection.type != TYPE_WINDOW) {
-+        Debug::log(LOG, "[screencopy] cursor metadata: selection type {} not supported", (int)selection.type);
-+        return false;
-+    }
++    teardownCursorMetadata();
 +
-+    cursorMeta         = {};
-+    cursorMeta.offsetX = 0;
-+    cursorMeta.offsetY = 0;
-+
-+    if (selection.type == TYPE_WINDOW) {
-+        if (!setupToplevelCursorSource())
-+            return false;
-+    } else {
-+        const auto POUTPUT = g_pPortalManager->getOutputFromName(selection.output);
-+        if (!POUTPUT)
-+            return false;
-+
-+        // cursor positions and the region both arrive in logical output coordinates; frames are buffer px
-+        outputPixelScale(POUTPUT, cursorMeta.scaleX, cursorMeta.scaleY);
-+        if (selection.type == TYPE_GEOMETRY) {
-+            cursorMeta.offsetX = std::round(selection.x * cursorMeta.scaleX);
-+            cursorMeta.offsetY = std::round(selection.y * cursorMeta.scaleY);
-+        }
-+
-+        cursorMeta.source = makeShared<CCExtImageCaptureSourceV1>(WL.outputSourceMgr->sendCreateSource(POUTPUT->output->resource()));
-+    }
-+
-+    cursorMeta.session = makeShared<CCExtImageCopyCaptureCursorSessionV1>(WL.imageCopyMgr->sendCreatePointerCursorSession(cursorMeta.source->resource(), WL.pointer->resource()));
-+
-+    if (!cursorMeta.source || !cursorMeta.session) {
-+        teardownCursorMetadata();
-+        return false;
-+    }
-+
-+    cursorMeta.session->setEnter([this, self = self](CCExtImageCopyCaptureCursorSessionV1* r) {
-+        if (!self)
-+            return;
-+        cursorMeta.inside = true;
-+    });
-+    cursorMeta.session->setLeave([this, self = self](CCExtImageCopyCaptureCursorSessionV1* r) {
-+        if (!self)
-+            return;
-+        cursorMeta.inside = false;
-+    });
-+    cursorMeta.session->setPosition([this, self = self](CCExtImageCopyCaptureCursorSessionV1* r, int32_t x, int32_t y) {
-+        if (!self)
-+            return;
-+        cursorMeta.x          = x;
-+        cursorMeta.y          = y;
-+        cursorMeta.positioned = true;
-+        Debug::log(TRACE, "[screencopy] cursor position {} {}", x, y);
-+    });
-+    cursorMeta.session->setHotspot([this, self = self](CCExtImageCopyCaptureCursorSessionV1* r, int32_t x, int32_t y) {
-+        if (!self)
-+            return;
-+        cursorMeta.hotX = x;
-+        cursorMeta.hotY = y;
-+    });
-+
-+    if (selection.type == TYPE_WINDOW) {
-+        for (auto& o : g_pPortalManager->getAllOutputs()) {
-+            auto oc     = std::make_unique<decltype(cursorMeta)::SOutputCursor>();
-+            auto* OC    = oc.get();
-+            oc->output  = o.get();
-+            oc->source  = makeShared<CCExtImageCaptureSourceV1>(WL.outputSourceMgr->sendCreateSource(o->output->resource()));
-+            oc->session = makeShared<CCExtImageCopyCaptureCursorSessionV1>(WL.imageCopyMgr->sendCreatePointerCursorSession(oc->source->resource(), WL.pointer->resource()));
-+            oc->session->setEnter([this, self = self, OC](CCExtImageCopyCaptureCursorSessionV1* r) {
-+                if (!self)
-+                    return;
-+                OC->inside = true;
-+            });
-+            oc->session->setLeave([this, self = self, OC](CCExtImageCopyCaptureCursorSessionV1* r) {
-+                if (!self)
-+                    return;
-+                OC->inside = false;
-+            });
-+            oc->session->setPosition([this, self = self, OC](CCExtImageCopyCaptureCursorSessionV1* r, int32_t x, int32_t y) {
-+                if (!self)
-+                    return;
-+                OC->x          = x;
-+                OC->y          = y;
-+                OC->positioned = true;
-+                cursorMeta.refreshWindowGeometry(false);
-+            });
-+            cursorMeta.outputs.emplace_back(std::move(oc));
-+        }
-+        cursorMeta.refreshWindowGeometry(true);
-+    }
-+
-+    Debug::log(LOG, "[screencopy] cursor metadata enabled (type {}, output {}, region offset {} {})", (int)selection.type, selection.output, cursorMeta.offsetX,
-+               cursorMeta.offsetY);
-+    return true;
-+}
-+
-+bool CScreencopyPortal::SSession::setupToplevelCursorSource() {
-+    // The picker hands us a wlr foreign-toplevel handle, but capture sources need an ext one.
-+    // Hyprland's toplevel-mapping protocol resolves both to a window address, which links them.
-+    auto&      WL      = g_pPortalManager->m_sWaylandConnection;
-+    const auto MAPPING = g_pPortalManager->m_sHelpers.toplevelMapping ? g_pPortalManager->m_sHelpers.toplevelMapping->manager() : nullptr;
-+
-+    if (!WL.toplevelSourceMgr || !WL.extToplevelListName || !MAPPING || !selection.windowHandle) {
-+        Debug::log(LOG, "[screencopy] cursor metadata: missing toplevel capture/mapping support");
-+        return false;
-+    }
-+
-+    auto list = makeShared<CCExtForeignToplevelListV1>(
-+        (wl_proxy*)wl_registry_bind((wl_registry*)WL.registry->resource(), WL.extToplevelListName, &ext_foreign_toplevel_list_v1_interface, 1u));
-+
-+    std::vector<SP<CCExtForeignToplevelHandleV1>> handles;
-+    list->setToplevel([&handles](CCExtForeignToplevelListV1* r, wl_proxy* h) { handles.emplace_back(makeShared<CCExtForeignToplevelHandleV1>(h)); });
-+    wl_display_roundtrip(WL.display);
-+
-+    // resolve addresses: the selected window, and every ext handle
-+    uint64_t              target = 0;
-+    std::vector<uint64_t> addresses(handles.size(), 0);
-+    std::vector<SP<CCHyprlandToplevelWindowMappingHandleV1>> requests;
-+
-+    auto                  targetReq = makeShared<CCHyprlandToplevelWindowMappingHandleV1>(MAPPING->sendGetWindowForToplevelWlr(selection.windowHandle->resource()));
-+    targetReq->setWindowAddress([&target](CCHyprlandToplevelWindowMappingHandleV1* r, uint32_t hi, uint32_t lo) { target = (uint64_t)hi << 32 | lo; });
-+    requests.push_back(targetReq);
-+
-+    for (size_t i = 0; i < handles.size(); ++i) {
-+        auto req = makeShared<CCHyprlandToplevelWindowMappingHandleV1>(MAPPING->sendGetWindowForToplevel(handles[i]->resource()));
-+        req->setWindowAddress([&addresses, i](CCHyprlandToplevelWindowMappingHandleV1* r, uint32_t hi, uint32_t lo) { addresses[i] = (uint64_t)hi << 32 | lo; });
-+        requests.push_back(req);
-+    }
-+    wl_display_roundtrip(WL.display);
-+    requests.clear();
-+
-+    // later toplevel announcements are not needed; drop them instead of touching the dead locals above
-+    list->setToplevel([](CCExtForeignToplevelListV1* r, wl_proxy* h) { makeShared<CCExtForeignToplevelHandleV1>(h); });
-+
-+    SP<CCExtForeignToplevelHandleV1> match;
-+    for (size_t i = 0; i < handles.size() && target; ++i) {
-+        if (addresses[i] == target) {
-+            match = handles[i];
++    switch (selection.type) {
++        case TYPE_OUTPUT:
++        case TYPE_GEOMETRY: {
++            const auto POUTPUT = g_pPortalManager->getOutputFromName(selection.output);
++            if (!POUTPUT || !outputLogicalBox(POUTPUT, cursorMeta.areaX, cursorMeta.areaY, cursorMeta.areaW, cursorMeta.areaH))
++                return false;
++            if (selection.type == TYPE_GEOMETRY) {
++                // the region is in logical coordinates relative to its output
++                cursorMeta.areaX += selection.x;
++                cursorMeta.areaY += selection.y;
++                cursorMeta.areaW = selection.w;
++                cursorMeta.areaH = selection.h;
++            }
++            cursorMeta.areaValid = true;
 +            break;
 +        }
++        case TYPE_WINDOW: {
++            const auto& MAPPING = g_pPortalManager->m_sHelpers.toplevelMapping;
++            cursorMeta.windowAddress = MAPPING && selection.windowHandle ? MAPPING->getWindowForToplevel(selection.windowHandle) : 0;
++            cursorMeta.refreshWindowArea(true);
++            if (!cursorMeta.areaValid) {
++                Debug::log(LOG, "[screencopy] cursor metadata: couldn't locate window {:x}", cursorMeta.windowAddress);
++                return false;
++            }
++            break;
++        }
++        default: Debug::log(LOG, "[screencopy] cursor metadata: selection type {} not supported", (int)selection.type); return false;
 +    }
 +
-+    if (!match) {
-+        Debug::log(LOG, "[screencopy] cursor metadata: no ext toplevel matches window {:x} ({} candidates)", target, handles.size());
-+        return false;
++    for (const auto& o : g_pPortalManager->getAllOutputs()) {
++        auto oc     = std::make_unique<SCursorMeta::SOutputCursor>();
++        auto PCURSOR = oc.get();
++        oc->output  = o.get();
++        oc->source  = makeShared<CCExtImageCaptureSourceV1>(WL.outputSourceMgr->sendCreateSource(o->output->resource()));
++        oc->session = makeShared<CCExtImageCopyCaptureCursorSessionV1>(WL.imageCopyMgr->sendCreatePointerCursorSession(oc->source->resource(), WL.pointer->resource()));
++        oc->session->setEnter([PCURSOR](CCExtImageCopyCaptureCursorSessionV1* r) { PCURSOR->inside = true; });
++        oc->session->setLeave([PCURSOR](CCExtImageCopyCaptureCursorSessionV1* r) { PCURSOR->inside = false; });
++        oc->session->setPosition([this, PCURSOR](CCExtImageCopyCaptureCursorSessionV1* r, int32_t x, int32_t y) {
++            PCURSOR->x = x;
++            PCURSOR->y = y;
++            cursorMeta.refreshWindowArea(false);
++        });
++        cursorMeta.outputs.emplace_back(std::move(oc));
 +    }
 +
-+    cursorMeta.toplevelList   = list;
-+    cursorMeta.toplevelHandle = match;
-+    cursorMeta.source         = makeShared<CCExtImageCaptureSourceV1>(WL.toplevelSourceMgr->sendCreateSource(match->resource()));
-+    cursorMeta.windowAddress = target;
-+    Debug::log(LOG, "[screencopy] cursor metadata: tracking window {:x}", target);
++    Debug::log(LOG, "[screencopy] cursor metadata enabled (type {}, area {},{} {}x{})", (int)selection.type, cursorMeta.areaX, cursorMeta.areaY, cursorMeta.areaW,
++               cursorMeta.areaH);
 +    return true;
 +}
 +
 +void CScreencopyPortal::SSession::teardownCursorMetadata() {
-+    cursorMeta.outputs.clear();
-+    cursorMeta.windowValid = false;
-+    cursorMeta.session.reset();
-+    cursorMeta.source.reset();
-+    cursorMeta.toplevelHandle.reset();
-+    cursorMeta.toplevelList.reset();
-+    cursorMeta.inside     = false;
-+    cursorMeta.positioned = false;
++    cursorMeta.outputs.clear(); // destroys the sessions, so no callback outlives this
++    cursorMeta.areaValid     = false;
++    cursorMeta.windowAddress = 0;
 +}
 +
  void CScreencopyPortal::startFrameCopy(CScreencopyPortal::SSession* pSession) {
      pSession->startCopy();
  
-@@ -501,7 +747,14 @@ void CScreencopyPortal::SSession::initCallbacks() {
+@@ -501,7 +664,14 @@ void CScreencopyPortal::SSession::initCallbacks() {
                  return;
              }
  
@@ -396,7 +336,7 @@ index 34af332..e5fe616 100644
              sharingData.copyRetries = 0;
  
              Debug::log(TRACE, "[sc] wlr frame copied");
-@@ -616,7 +869,12 @@ void CScreencopyPortal::SSession::initCallbacks() {
+@@ -616,7 +786,12 @@ void CScreencopyPortal::SSession::initCallbacks() {
                  return;
              }
  
@@ -410,7 +350,7 @@ index 34af332..e5fe616 100644
              sharingData.copyRetries = 0;
  
              Debug::log(TRACE, "[sc] hl frame copied");
-@@ -669,7 +927,11 @@ CScreencopyPortal::CScreencopyPortal(SP<CCZwlrScreencopyManagerV1> mgr) {
+@@ -669,7 +844,11 @@ CScreencopyPortal::CScreencopyPortal(SP<CCZwlrScreencopyManagerV1> mgr) {
                      sdbus::registerMethod("Start").implementedAs([this](sdbus::ObjectPath o1, sdbus::ObjectPath o2, std::string s1, std::string s2,
                                                                          std::unordered_map<std::string, sdbus::Variant> m1) { return onStart(o1, o2, s1, s2, m1); }),
                      sdbus::registerProperty("AvailableSourceTypes").withGetter([]() { return uint32_t{VIRTUAL | MONITOR | WINDOW}; }),
@@ -423,7 +363,7 @@ index 34af332..e5fe616 100644
                      sdbus::registerProperty("version").withGetter([]() { return uint32_t{6}; }))
          .forInterface(INTERFACE_NAME);
  
-@@ -786,7 +1048,7 @@ static void pwStreamParamChanged(void* data, uint32_t id, const spa_pod* param)
+@@ -786,7 +965,7 @@ static void pwStreamParamChanged(void* data, uint32_t id, const spa_pod* param)
      }
  
      spa_pod_dynamic_builder dynBuilder[3];
@@ -432,7 +372,7 @@ index 34af332..e5fe616 100644
      uint8_t                 params_buffer[3][1024];
  
      spa_pod_dynamic_builder_init(&dynBuilder[0], params_buffer[0], sizeof(params_buffer[0]), 2048);
-@@ -910,7 +1172,13 @@ static void pwStreamParamChanged(void* data, uint32_t id, const spa_pod* param)
+@@ -910,7 +1089,13 @@ static void pwStreamParamChanged(void* data, uint32_t id, const spa_pod* param)
          &dynBuilder[2].b, SPA_TYPE_OBJECT_ParamMeta, SPA_PARAM_Meta, SPA_PARAM_META_type, SPA_POD_Id(SPA_META_VideoDamage), SPA_PARAM_META_size,
          SPA_POD_CHOICE_RANGE_Int(sizeof(struct spa_meta_region) * 4, sizeof(struct spa_meta_region) * 1, sizeof(struct spa_meta_region) * 4));
  
@@ -447,7 +387,7 @@ index 34af332..e5fe616 100644
      spa_pod_dynamic_builder_clean(&dynBuilder[0]);
      spa_pod_dynamic_builder_clean(&dynBuilder[1]);
      spa_pod_dynamic_builder_clean(&dynBuilder[2]);
-@@ -1047,6 +1315,8 @@ void CPipewireConnection::destroyStream(CScreencopyPortal::SSession* pSession) {
+@@ -1047,6 +1232,8 @@ void CPipewireConnection::destroyStream(CScreencopyPortal::SSession* pSession) {
          return;
      pSession->sharingData.active = false;
  
@@ -456,78 +396,56 @@ index 34af332..e5fe616 100644
      const auto PSTREAM = streamFromSession(pSession);
  
      if (!PSTREAM || !PSTREAM->stream)
-@@ -1233,6 +1503,51 @@ void CPipewireConnection::enqueue(CScreencopyPortal::SSession* pSession) {
+@@ -1233,6 +1420,32 @@ void CPipewireConnection::enqueue(CScreencopyPortal::SSession* pSession) {
          }
      }
  
 +    spa_meta_cursor* cursor = (spa_meta_cursor*)spa_buffer_find_meta_data(spaBuf, SPA_META_Cursor, sizeof(*cursor));
 +    if (cursor) {
-+        const auto& CM = pSession->cursorMeta;
++        const auto&    CM = pSession->cursorMeta;
 +        const uint32_t FW = pSession->sharingData.frameInfoDMA.w ? pSession->sharingData.frameInfoDMA.w : pSession->sharingData.frameInfoSHM.w;
 +        const uint32_t FH = pSession->sharingData.frameInfoDMA.h ? pSession->sharingData.frameInfoDMA.h : pSession->sharingData.frameInfoSHM.h;
-+        // window shares: pointer (global logical) against the window's own rect; menus/popups over it count
-+        int32_t viaOutX = 0, viaOutY = 0;
-+        bool    viaOutput = false;
-+        if (pSession->selection.type == TYPE_WINDOW && CM.windowValid) {
-+            for (const auto& o : CM.outputs) {
-+                if (!o->inside || !o->positioned)
-+                    continue;
-+                const double RX = o->output->logicalX + o->x - CM.winX, RY = o->output->logicalY + o->y - CM.winY;
-+                if (RX >= 0 && RY >= 0 && RX < CM.winW && RY < CM.winH) {
-+                    viaOutX   = std::round(RX * FW / CM.winW);
-+                    viaOutY   = std::round(RY * FH / CM.winH);
-+                    viaOutput = true;
-+                }
-+                break;
-+            }
-+        }
-+        const bool WINDOW = pSession->selection.type == TYPE_WINDOW;
-+        const double sx = CM.scaleX, sy = CM.scaleY;
-+        if (pSession->cursorMode == METADATA && CM.session && (CM.positioned || viaOutput || (WINDOW && CM.windowValid))) {
-+            cursor->id = 1;
++        if (pSession->cursorMode == METADATA && CM.areaValid && FW && FH) {
++            double x, y;
++            cursor->id    = 1;
 +            cursor->flags = 0;
-+            if (WINDOW) {
-+                cursor->position.x = viaOutput ? viaOutX : -1;
-+                cursor->position.y = viaOutput ? viaOutY : -1;
-+            } else if (CM.inside) {
-+                cursor->position.x = (int32_t)std::round(CM.x * sx) - CM.offsetX;
-+                cursor->position.y = (int32_t)std::round(CM.y * sy) - CM.offsetY;
++            if (CM.pointerInArea(x, y)) {
++                // logical px within the area -> buffer px of this frame
++                cursor->position.x = std::lround(x * FW / CM.areaW);
++                cursor->position.y = std::lround(y * FH / CM.areaH);
 +            } else {
-+                // pointer is on another output: report it outside the frame
++                // outside the shared area: report it off-frame so consumers hide it
 +                cursor->position.x = -1;
 +                cursor->position.y = -1;
 +            }
-+            cursor->hotspot.x     = CM.hotX;
-+            cursor->hotspot.y     = CM.hotY;
-+            cursor->bitmap_offset = 0; // no bitmap yet; consumers draw their own cursor
-+            Debug::log(TRACE, "[pw]  | cursor {} {} inside {}", cursor->position.x, cursor->position.y, CM.inside);
++            cursor->hotspot.x     = 0;
++            cursor->hotspot.y     = 0;
++            cursor->bitmap_offset = 0; // no bitmap: consumers draw their own cursor
++            Debug::log(TRACE, "[pw]  | cursor {} {}", cursor->position.x, cursor->position.y);
 +        } else
-+            cursor->id = 0; // invalid: no cursor info for this buffer
++            cursor->id = 0; // no cursor info for this buffer
 +    }
 +
      spa_data* datas = spaBuf->datas;
  
      Debug::log(TRACE, "[pw]  | size {}x{}", PSTREAM->pSession->sharingData.frameInfoDMA.w, PSTREAM->pSession->sharingData.frameInfoDMA.h);
-diff --git c/src/portals/Screencopy.hpp w/src/portals/Screencopy.hpp
-index 340bf0a..d4cb55e 100644
---- c/src/portals/Screencopy.hpp
-+++ w/src/portals/Screencopy.hpp
-@@ -1,7 +1,14 @@
+diff --git a/src/portals/Screencopy.hpp b/src/portals/Screencopy.hpp
+index 340bf0a..182286d 100644
+--- a/src/portals/Screencopy.hpp
++++ b/src/portals/Screencopy.hpp
+@@ -1,7 +1,11 @@
  #pragma once
  
 +#include <chrono>
-+struct SOutput;
 +
  #include "wlr-screencopy-unstable-v1.hpp"
  #include "hyprland-toplevel-export-v1.hpp"
 +#include "ext-image-copy-capture-v1.hpp"
 +#include "ext-image-capture-source-v1.hpp"
-+#include "ext-foreign-toplevel-list-v1.hpp"
-+#include "hyprland-toplevel-mapping-v1.hpp"
  #include <cstdint>
  #include <hyprutils/memory/UniquePtr.hpp>
  #include <hyprutils/memory/WeakPtr.hpp>
-@@ -11,6 +18,7 @@
+@@ -11,6 +15,7 @@
  #include "../shared/Session.hpp"
  #include "../dbusDefines.hpp"
  #include <chrono>
@@ -535,60 +453,40 @@ index 340bf0a..d4cb55e 100644
  
  enum cursorModes {
      HIDDEN   = 1,
-@@ -77,6 +85,42 @@ class CScreencopyPortal {
+@@ -77,6 +82,33 @@ class CScreencopyPortal {
  
          void                                      startCopy();
          void                                      initCallbacks();
 +        bool                                      setupCursorMetadata();
-+        bool                                      setupToplevelCursorSource();
 +        void                                      teardownCursorMetadata();
 +
-+        // cursor_mode METADATA: cursor position tracked via ext-image-copy-capture
-+        // cursor sessions and attached to buffers as SPA_META_Cursor
++        // cursor_mode METADATA: the pointer is followed with one ext-image-copy-capture cursor session per
++        // output, and its position relative to the shared area is attached to every buffer as SPA_META_Cursor.
 +        struct SCursorMeta {
-+            SP<CCExtImageCaptureSourceV1>            source;
-+            SP<CCExtForeignToplevelListV1>           toplevelList;   // window shares only
-+            SP<CCExtForeignToplevelHandleV1>         toplevelHandle; // window shares only
-+            SP<CCExtImageCopyCaptureCursorSessionV1> session;
-+            bool                                     inside     = false;
-+            bool                                     positioned = false;
-+            int32_t                                  x = 0, y = 0;       // hotspot position, source buffer px
-+            int32_t                                  hotX = 0, hotY = 0; // hotspot offset in cursor image
-+            int32_t                                  offsetX = 0, offsetY = 0; // region origin within source, buffer px
-+            // Hyprland reports cursor positions in logical px; frames are buffer px
-+            double                                   scaleX = 1.0, scaleY = 1.0;
-+
-+            // window shares: Hyprland measures toplevel cursor positions from the window's full bounding box
-+            // (border, shadow, groupbar...), not from the captured surface. So follow the pointer per output
-+            // (exact, logical px) and place it against the window's own geometry from Hyprland IPC.
 +            struct SOutputCursor {
 +                const SOutput*                           output = nullptr;
 +                SP<CCExtImageCaptureSourceV1>            source;
 +                SP<CCExtImageCopyCaptureCursorSessionV1> session;
-+                bool                                     inside = false, positioned = false;
-+                int32_t                                  x = 0, y = 0; // logical, relative to the output
++                bool                                     inside = false;
++                int32_t                                  x = 0, y = 0;
 +            };
 +            std::vector<std::unique_ptr<SOutputCursor>> outputs;
-+            uint64_t                                    windowAddress = 0;
-+            bool                                        windowValid   = false;
-+            double                                      winX = 0, winY = 0, winW = 0, winH = 0; // global logical
-+            std::chrono::steady_clock::time_point       windowQueried;
-+            void                                        refreshWindowGeometry(bool force);
++
++            // the shared area in global logical coordinates
++            bool     areaValid = false;
++            double   areaX = 0, areaY = 0, areaW = 0, areaH = 0;
++
++            // window shares: the area follows the window, looked up through Hyprland's IPC
++            uint64_t                              windowAddress = 0;
++            std::chrono::steady_clock::time_point windowQueried;
++            void                                  refreshWindowArea(bool force);
++
++            // pointer position relative to the area's top-left, in logical px; false if outside
++            bool pointerInArea(double& x, double& y) const;
 +        } cursorMeta;
  
          struct {
              bool                                  active              = false;
-diff --git c/src/shared/ToplevelMappingManager.hpp w/src/shared/ToplevelMappingManager.hpp
-index a449f72..d933905 100644
---- c/src/shared/ToplevelMappingManager.hpp
-+++ w/src/shared/ToplevelMappingManager.hpp
-@@ -12,6 +12,9 @@ class CToplevelMappingManager {
-     CToplevelMappingManager(SP<CCHyprlandToplevelMappingManagerV1> mgr);
- 
-     uint64_t getWindowForToplevel(SP<CCZwlrForeignToplevelHandleV1> handle);
-+    SP<CCHyprlandToplevelMappingManagerV1> manager() {
-+        return m_pManager;
-+    }
- 
-   private:
-     SP<CCHyprlandToplevelMappingManagerV1>                          m_pManager = nullptr;
+-- 
+2.56.0
+
