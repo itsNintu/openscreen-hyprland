@@ -48,6 +48,12 @@ Hyprland's IPC where the window is (at most every 100 ms while the pointer moves
 starting point). With it, window shares could use a toplevel cursor session directly and the IPC lookup
 goes away. Openscreen detecting taps itself would make the tap bridge unnecessary.
 
+## Upstream status
+
+- Portal: [hyprwm/xdg-desktop-portal-hyprland#444](https://github.com/hyprwm/xdg-desktop-portal-hyprland/issues/444) (patch offered)
+- Hyprland cursor positions: [hyprwm/Hyprland discussion #17077](https://github.com/hyprwm/Hyprland/discussions/17077)
+- Openscreen: [getopenscreen/openscreen discussion #1659](https://github.com/getopenscreen/openscreen/discussions/1659)
+
 ## Known limits
 
 - Openscreen on Linux records every click as a left click.
