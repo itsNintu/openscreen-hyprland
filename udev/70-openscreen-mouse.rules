@@ -1,0 +1,4 @@
+KERNEL=="event*", SUBSYSTEM=="input", ENV{ID_INPUT_MOUSE}=="1", ENV{ID_INPUT_KEYBOARD}!="1", TAG+="uaccess"
+KERNEL=="event*", SUBSYSTEM=="input", ENV{ID_INPUT_TOUCHPAD}=="1", ENV{ID_INPUT_KEYBOARD}!="1", TAG+="uaccess"
+# Logitech G502 X Plus (Lightspeed receiver 046d:c547) reports as mouse+keyboard; allow it explicitly
+KERNEL=="event*", SUBSYSTEM=="input", ENV{ID_VENDOR_ID}=="046d", ENV{ID_MODEL_ID}=="c547", ENV{ID_INPUT_MOUSE}=="1", TAG+="uaccess"

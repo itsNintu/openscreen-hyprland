@@ -1,0 +1,2 @@
+# Openscreen tap bridge: virtual mouse that only raw readers (Openscreen) should see; keep the compositor off it
+SUBSYSTEM=="input", ATTRS{name}=="Openscreen tap bridge", ENV{LIBINPUT_IGNORE_DEVICE}="1"

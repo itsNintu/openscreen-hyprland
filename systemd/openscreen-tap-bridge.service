@@ -1,0 +1,13 @@
+[Unit]
+Description=Pass touchpad taps to Openscreen as clicks
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+ExecStart=%h/.local/libexec/openscreen-tap-bridge
+Restart=on-failure
+RestartSec=2
+Slice=session.slice
+
+[Install]
+WantedBy=graphical-session.target
