@@ -33,7 +33,7 @@ mv -f "$BIN.new" "$BIN"
 "$DIR/deps-state.sh" > "$STAMP"
 
 echo "==> Installed $BIN (v$ver + cursor metadata)"
-if [ -n "${WAYLAND_DISPLAY:-}" ]; then
+if systemctl --user is-active --quiet xdg-desktop-portal-hyprland.service; then
     systemctl --user restart xdg-desktop-portal-hyprland.service
     echo "==> Portal restarted"
 fi

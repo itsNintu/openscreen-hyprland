@@ -36,6 +36,20 @@ portal package stay stock and keep updating normally.
 After a portal or library update you'll get a notification and screen sharing falls back to stock until
 you run `~/.local/share/xdph-cursor/rebuild.sh`.
 
+## Unattended recording (agents, SSH, headless boxes)
+
+`agent/install.sh` (after `./install.sh`) lets an agent record with nobody at the machine:
+
+| Part | What it does |
+| --- | --- |
+| `agent/openscreen-agent-picker` | The portal's picker. Answers with a choice queued by `openscreen-agent pick …` (screen, window by title/class, or region); otherwise opens the normal picker. |
+| `agent/openscreen-agent` | One command for agents: `record` (queues the pick, hides the real pointer on virtual outputs, runs Openscreen's headless `record`), `export`/`sources`/`mcp` (Openscreen's own CLI with the desktop session's env, so it works over SSH), and input: `move`, `click`, `type`, `key`, `scroll`, `workspace`, `screenshot`, `where`. |
+| ydotool + `agent/72-openscreen-agent-input.rules` | `ydotoold` is a virtual mouse that both Hyprland and Openscreen see, so agent clicks become click zooms. The rule lets the seat user use uinput (no `input` group) and tags ydotoold's device as a mouse, which udev misses. |
+| `agent/SKILL.md` | Claude Code skill with the workflow; the installer also registers Openscreen's MCP server (`openscreen mcp`) as `openscreen`. |
+
+Hyprland draws a software cursor on headless outputs and paints it into captured frames, so recordings
+there hide the real pointer (`cursor:invisible`) while they run; Openscreen draws its own.
+
 ## What's a workaround, and the clean fix
 
 The portal patch itself uses the standard `ext-image-copy-capture` cursor sessions. One part works around

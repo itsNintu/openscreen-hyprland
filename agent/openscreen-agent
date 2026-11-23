@@ -1,0 +1,158 @@
+#!/usr/bin/env bash
+# openscreen-agent: run Openscreen recordings unattended (agents, SSH, headless Hyprland boxes).
+#
+#   openscreen-agent record [--screen [OUTPUT] | --window MATCH | --region X,Y,W,H [OUTPUT]] [record options]
+#       Queues the share choice for the picker, then runs `Openscreen record` with the rest of the options
+#       (--duration N, --project out.openscreen, --json, --mic, --system-audio, --cursor ...).
+#       Without --duration, stop it with SIGINT/SIGTERM or by typing "stop" on stdin.
+#   openscreen-agent export|sources|info|captions|pack|mcp ...   Openscreen's own CLI, with the session env set
+#   openscreen-agent pick screen [OUTPUT] | window MATCH | region X,Y,W,H [OUTPUT]   queue a choice (10 min)
+#   openscreen-agent unpick
+#   openscreen-agent pointer hide|show     hide the real pointer (do this before an MCP startRecording on a
+#                                         virtual output, or the real pointer is painted into the frames)
+#
+#   Input that Openscreen records as real clicks (virtual mouse via ydotoold):
+#   openscreen-agent move X Y [MS]          glide the pointer to X,Y (layout px) over MS ms (default 350)
+#   openscreen-agent click [left|right|middle] [X Y]
+#   openscreen-agent down|up [left|right|middle]
+#   openscreen-agent scroll N               wheel N notches (positive = down)
+#   openscreen-agent type TEXT              type text (wtype)
+#   openscreen-agent key ARGS...            raw wtype args, e.g. key -M ctrl -k l -m ctrl
+#   openscreen-agent workspace N            show workspace N on the focused monitor
+#   openscreen-agent screenshot [FILE]      PNG of the focused monitor (default: stdout path in /tmp)
+#   openscreen-agent where                  cursor position, monitors, windows on the active workspace
+set -euo pipefail
+
+APP="${OPENSCREEN_APP:-$HOME/Applications/Openscreen.AppImage}"
+RUN="/run/user/$(id -u)/openscreen-agent"
+PICK="$RUN/pick"
+
+# SSH sessions don't have the desktop session's environment; borrow it from systemd.
+load_env() {
+    local line name
+    while IFS= read -r line; do
+        case "$line" in
+            WAYLAND_DISPLAY=* | DISPLAY=* | HYPRLAND_INSTANCE_SIGNATURE=* | DBUS_SESSION_BUS_ADDRESS=* | \
+                XDG_CURRENT_DESKTOP=* | XDG_SESSION_TYPE=* | XCURSOR_SIZE=* | XCURSOR_THEME=*)
+                name=${line%%=*}
+                [[ -n "${!name:-}" ]] || export "$line"
+                ;;
+        esac
+    done < <(systemctl --user show-environment)
+    export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+}
+
+die() { echo "openscreen-agent: $*" >&2; exit 1; }
+hypr() { hyprctl dispatch "$1" >/dev/null; }
+focused_output() { hyprctl monitors -j | jq -r '(map(select(.focused)) + .)[0].name'; }
+cursor() { hyprctl cursorpos -j | jq -r '"\(.x|floor) \(.y|floor)"'; }
+
+pick() {
+    local kind="${1:-}"; shift || true
+    local spec
+    case "$kind" in
+        screen) spec="screen:${1:-$(focused_output)}" ;;
+        window) [[ -n "${1:-}" ]] || die "pick window needs a class/title substring or address:0x..."
+                spec="window:$1" ;;
+        region) [[ "${1:-}" =~ ^[0-9]+,[0-9]+,[0-9]+,[0-9]+$ ]] || die "pick region needs X,Y,W,H"
+                spec="region:${2:-$(focused_output)}@$1" ;;
+        *) die "pick screen|window|region" ;;
+    esac
+    mkdir -p "$RUN"
+    printf '%s\n' "$spec" >"$PICK"
+}
+
+button_code() {
+    case "${1:-left}" in
+        left) echo 0 ;; right) echo 1 ;; middle) echo 2 ;; *) die "button must be left, right or middle" ;;
+    esac
+}
+
+glide() {
+    local tx=$1 ty=$2 ms=${3:-350} x y steps i
+    read -r x y < <(cursor)
+    steps=$(( ms / 16 )); (( steps < 1 )) && steps=1
+    for (( i = 1; i <= steps; i++ )); do
+        # ease-in-out so zooms and the drawn cursor look natural
+        local p
+        p=$(awk -v i="$i" -v n="$steps" 'BEGIN { t = i / n; print (t < .5) ? 2*t*t : 1 - (-2*t+2)^2/2 }')
+        hypr "hl.dsp.cursor.move({ x = $(awk -v a="$x" -v b="$tx" -v p="$p" 'BEGIN{printf "%d", a+(b-a)*p}'), y = $(awk -v a="$y" -v b="$ty" -v p="$p" 'BEGIN{printf "%d", a+(b-a)*p}') })"
+        sleep 0.016
+    done
+}
+
+load_env
+cmd="${1:-help}"; shift || true
+
+case "$cmd" in
+    record)
+        choice=(screen)
+        args=()
+        while (( $# )); do
+            case "$1" in
+                --screen) choice=(screen); [[ -n "${2:-}" && "$2" != --* ]] && { choice+=("$2"); shift; } ;;
+                --window) choice=(window "${2:?--window needs a value}"); shift ;;
+                --region) choice=(region "${2:?--region needs X,Y,W,H}"); shift
+                          [[ -n "${2:-}" && "$2" != --* ]] && { choice+=("$2"); shift; } ;;
+                *) args+=("$1") ;;
+            esac
+            shift
+        done
+        pick "${choice[@]}"
+        # Virtual (headless) outputs have no hardware cursor plane, so Hyprland paints the real pointer into
+        # captured frames and Openscreen's drawn cursor would show up twice. Hide it while recording.
+        hide=${OPENSCREEN_AGENT_HIDE_POINTER:-auto}
+        if [[ "$hide" == auto ]]; then
+            out=$(sed -E 's/^(screen|region):([^@]*).*/\2/; t; d' "$PICK")
+            [[ -n "$out" ]] || out=$(focused_output)
+            hide=$(hyprctl monitors -j | jq -r --arg o "$out" 'if any(.[]; .name == $o and .make == "") then 1 else 0 end')
+        fi
+        was_invisible=$(hyprctl getoption cursor:invisible -j | jq -r '.bool // .int // false')
+        restore() {
+            rm -f "$PICK"
+            [[ "$hide" == 1 ]] && hyprctl eval "hl.config({ cursor = { invisible = $was_invisible } })" >/dev/null
+        }
+        trap restore EXIT
+        [[ "$hide" == 1 ]] && hyprctl eval "hl.config({ cursor = { invisible = true } })" >/dev/null
+        "$APP" record "${args[@]}"
+        ;;
+    export | sources | info | captions | pack | mcp | help-cli)
+        [[ "$cmd" == help-cli ]] && cmd=help
+        exec "$APP" "$cmd" "$@"
+        ;;
+    pick) pick "$@" ;;
+    unpick) rm -f "$PICK" ;;
+    pointer)
+        case "${1:-}" in
+            hide) hyprctl eval "hl.config({ cursor = { invisible = true } })" >/dev/null ;;
+            show) hyprctl eval "hl.config({ cursor = { invisible = false } })" >/dev/null ;;
+            *) die "pointer hide|show" ;;
+        esac
+        ;;
+    move) [[ $# -ge 2 ]] || die "move X Y [MS]"; glide "$1" "$2" "${3:-350}" ;;
+    click)
+        b=$(button_code "${1:-left}")
+        [[ $# -ge 3 ]] && { glide "$2" "$3"; sleep 0.05; }
+        ydotool click "$(printf '0x%X' $(( 0xC0 + b )))" >/dev/null
+        ;;
+    down) ydotool click "$(printf '0x%X' $(( 0x40 + $(button_code "${1:-left}") )))" >/dev/null ;;
+    up) ydotool click "$(printf '0x%X' $(( 0x80 + $(button_code "${1:-left}") )))" >/dev/null ;;
+    scroll) ydotool mousemove --wheel -x 0 -y "$(( -${1:?scroll N} ))" >/dev/null ;;
+    type) wtype -- "$*" ;;
+    key) wtype "$@" ;;
+    workspace) hypr "hl.dsp.focus({ workspace = \"${1:?workspace N}\" })" ;;
+    screenshot)
+        out="${1:-$(mktemp --suffix=.png /tmp/openscreen-agent-XXXXXX)}"
+        grim -o "$(focused_output)" "$out"
+        echo "$out"
+        ;;
+    where)
+        echo "cursor: $(cursor)"
+        hyprctl monitors -j | jq -r '.[] | "monitor: \(.name) \(.width)x\(.height)@\(.x),\(.y) scale \(.scale) ws \(.activeWorkspace.id)\(if .focused then " (focused)" else "" end)"'
+        ws=$(hyprctl activeworkspace -j | jq .id)
+        hyprctl clients -j | jq -r --argjson ws "$ws" '.[] | select(.workspace.id == $ws) |
+            "window: \(.address) \(.class) \"\(.title)\" at \(.at[0]),\(.at[1]) size \(.size[0])x\(.size[1])"'
+        ;;
+    help | -h | --help) sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//' ;;
+    *) die "unknown command '$cmd' (try: openscreen-agent help)" ;;
+esac

@@ -28,12 +28,17 @@ install -Dm644 systemd/xdph-cursor-metadata.conf "$UNITS/xdg-desktop-portal-hypr
 systemctl --user daemon-reload
 "$XDPH_DIR/rebuild.sh"
 
-echo "==> Tap bridge"
-install -Dm644 tap-bridge/tap-bridge.c "$TAP_DIR/tap-bridge.c"
-mkdir -p "$LIBEXEC"
-gcc -O2 -Wall -o "$LIBEXEC/openscreen-tap-bridge" "$TAP_DIR/tap-bridge.c" $(pkg-config --cflags --libs libinput libudev)
-install -Dm644 systemd/openscreen-tap-bridge.service "$UNITS/openscreen-tap-bridge.service"
-systemctl --user daemon-reload
-systemctl --user enable --now openscreen-tap-bridge.service
+# The tap bridge only matters on machines with a touchpad (skip with NO_TAP_BRIDGE=1).
+if [[ -z "${NO_TAP_BRIDGE:-}" ]] && udevadm info --export-db | grep -q '^E: ID_INPUT_TOUCHPAD=1'; then
+    echo "==> Tap bridge"
+    install -Dm644 tap-bridge/tap-bridge.c "$TAP_DIR/tap-bridge.c"
+    mkdir -p "$LIBEXEC"
+    gcc -O2 -Wall -o "$LIBEXEC/openscreen-tap-bridge" "$TAP_DIR/tap-bridge.c" $(pkg-config --cflags --libs libinput libudev)
+    install -Dm644 systemd/openscreen-tap-bridge.service "$UNITS/openscreen-tap-bridge.service"
+    systemctl --user daemon-reload
+    systemctl --user enable --now openscreen-tap-bridge.service
+else
+    echo "==> No touchpad found, skipping the tap bridge"
+fi
 
 echo "==> Done. Restart Openscreen, then record with Editable cursor on."

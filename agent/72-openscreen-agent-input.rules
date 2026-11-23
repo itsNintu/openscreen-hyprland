@@ -1,0 +1,7 @@
+# Agent pointer for unattended recording: ydotoold makes a virtual mouse+keyboard through uinput.
+# Let the logged-in seat user create it (without joining the 'input' group, which exposes real keyboards).
+KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinput"
+# udev classifies ydotoold's device as keyboard only, so libinput/Hyprland would drop its button events.
+# Mark it as a mouse too, and let Openscreen read it so agent clicks become click zooms.
+SUBSYSTEM=="input", ATTRS{name}=="ydotoold virtual device", ENV{ID_INPUT_MOUSE}="1"
+KERNEL=="event*", SUBSYSTEM=="input", ATTRS{name}=="ydotoold virtual device", TAG+="uaccess"

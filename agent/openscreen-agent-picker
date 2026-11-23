@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Screen-sharing picker for xdg-desktop-portal-hyprland (screencopy:custom_picker_binary).
+# If an agent queued a choice with `openscreen-agent pick ...` in the last 10 minutes, answer with it
+# without showing anything. Otherwise open the normal interactive picker.
+PICK="/run/user/$(id -u)/openscreen-agent/pick"
+FALLBACK="${OPENSCREEN_AGENT_FALLBACK_PICKER:-hyprland-preview-share-picker}"
+TTL=600
+
+if [[ -f "$PICK" ]] && (( $(date +%s) - $(stat -c %Y "$PICK") < TTL )); then
+    spec=$(<"$PICK")
+    case "$spec" in
+        screen:* | region:*)
+            echo "[SELECTION]/$spec"
+            exit 0
+            ;;
+        window:*)
+            # XDPH_WINDOW_SHARING_LIST: handle[HC>]class[HT>]title[HE>]hyprland-address(decimal)[HA>]...
+            needle=${spec#window:}
+            want_addr=""
+            [[ "$needle" == address:0x* ]] && want_addr=$((16#${needle#address:0x}))
+            list=${XDPH_WINDOW_SHARING_LIST//\[HA>\]/$'\n'}
+            while IFS= read -r entry; do
+                [[ -z "$entry" ]] && continue
+                handle=${entry%%\[HC>\]*}; rest=${entry#*\[HC>\]}
+                class=${rest%%\[HT>\]*}; rest=${rest#*\[HT>\]}
+                title=${rest%%\[HE>\]*}; addr=${rest#*\[HE>\]}
+                if [[ -n "$want_addr" ]]; then
+                    [[ "$addr" == "$want_addr" ]] || continue
+                elif [[ "${class,,}" != *"${needle,,}"* && "${title,,}" != *"${needle,,}"* ]]; then
+                    continue
+                fi
+                echo "[SELECTION]/window:$handle"
+                exit 0
+            done <<<"$list"
+            echo "openscreen-agent-picker: no window matches '$needle'" >&2
+            exit 1
+            ;;
+    esac
+    echo "openscreen-agent-picker: bad pick '$spec'" >&2
+    exit 1
+fi
+
+exec "$FALLBACK" "$@"
